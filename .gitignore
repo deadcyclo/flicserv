@@ -1,0 +1,16 @@
+*~
+\#*\#
+*.iml
+.idea
+.metadata/
+.settings/
+target/
+.classpath
+*.log
+bin/
+target/
+war/
+nap/service
+nap/model
+.project
+atlassian-ide-plugin.xml

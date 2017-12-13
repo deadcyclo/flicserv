@@ -1,0 +1,138 @@
+#!/usr/bin/perl
+
+##############################################################################
+# FlicServ                              Version 1.1                          #
+# Copyright 2008 Brendan Johan Lee      brendan.johan.lee@gmail.com          #
+# Created 28.07.2008                    Last Modified 16.08.2010             #
+# Latest version available from         www.gsmblog.net and www.vanntett.net #
+##############################################################################
+# Copyright (C) 2008 Brendan Johan Lee <brendan.johan.lee@gmail.com>         #
+#                                                                            #
+# This program is free software; you can redistribute it and/or modify       #
+# it under the terms of the GNU General Public License as published by       #
+# the Free Software Foundation; either version 2 of the License, or          #
+# (at your option) any later version.                                        #
+#                                                                            #
+# This program is distributed in the hope that it will be useful,            #
+# but WITHOUT ANY WARRANTY; without even the implied warranty of             #
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the              #
+# GNU General Public License for more details.                               #
+#                                                                            #
+# You should have received a copy of the GNU General Public License          #
+# along with this program; if not, write to the Free Software                #
+# Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA. #
+# or see http://www.gnu.org/                                                 #
+#                                                                            #
+##############################################################################
+
+##############################################################################
+# Instructions and more information can be found at:                         #
+# http://gsmblog.net/linux-wedge-driver-for-microvision-flic-barcode-scanner #
+##############################################################################
+
+##############################################################################
+# TODO:                                                                      #
+#   - auto reconnect when bluetooth connection is lost                       #
+#   - add functions for changing settings                                    #
+#   - add options to append and/or prepend keypresses/strings                #
+#                                                                            #
+# Version 1.1:                                                               #
+#   - fixed a race condition resulting in garbled barcode or linebreak       #
+#     inserted before barcode                                                #
+##############################################################################
+
+use Device::SerialPort;
+use threads;
+use threads::shared;
+use Socket; 
+use Time::HiRes qw (sleep);
+
+my $tty = shift;
+my $switch1 = shift;
+my $switch2 = shift;
+my @queue : shared;
+my $port = 7890;
+my $proto = getprotobyname('tcp');
+my $bluetooth = 0; 
+
+die "Usage: FlicServ tty [--linefeed] [--noserver]\n" if ($tty eq "");
+$noserver = 1 if ($switch1 eq "--noserver" || $switch2 eq "--noserver");
+$lf = 1 if ($switch1 eq "--linefeed" || $switch2 eq "--linefeed");
+
+if ($tty =~ /rfcomm(\d)/) {
+	$bluetooth = 1;
+	system('rfcomm connect '.$1.'&');
+	sleep(5);
+}
+
+my $flic = Device::SerialPort->new ($tty);
+die "Couldn't open $tty\n" if (!defined($flic));
+$flic->baudrate(4800);
+$flic->parity("none");
+$flic->databits(8);
+$flic->stopbits(1);
+$flic->read_const_time(100);
+$flic->read_char_time(5);
+
+$xte = `which xte`;
+$xte =~ s/\n//g;
+
+die "This script requires xautomation to run\n" if ($xte eq "");
+
+$thr = threads->new(\&server);
+$thr->detach;
+
+while (1) {
+	while ($result !~ /\n/) {
+		($count, $res) = $flic->read(1);
+		if ($count>0){
+			$result.=$res;
+		} 
+	}
+	if (length($result)>0) {
+		$result =~ s/\n|\x00|\xff//g;
+		if ($result =~ /^\x02/) {
+			$result =~ s/^\x02//;
+			if ($bluetooth==1) {
+				$count = substr($result,length($result)-5,4);
+				$flic->write($count.chr(0x06));
+				$result = substr($result,0,length($result)-5);
+			}
+			$result =~ s/\W//gi;
+			if ($noserver==1) {
+				system($xte.' "str '.$result.'"');
+				system($xte.' "key Return"') if ($lf==1);
+				print "sendt ".$result."\n";
+			} else {
+				unshift @queue, $result;
+				print "pushed ".$result."\n";
+			}
+		}
+	}
+	$result = "";
+}
+
+sub server {
+	socket(SERVER, PF_INET, SOCK_STREAM, $proto) or die "socket: $!";
+	setsockopt(SERVER, SOL_SOCKET, SO_REUSEADDR, 1) or die "setsock: $!";
+	
+	my $paddr = sockaddr_in($port, INADDR_ANY);
+	
+	bind(SERVER, $paddr) or die "bind: $!";
+	listen(SERVER, SOMAXCONN) or die "listen: $!";
+	while ($client_addr = accept(CLIENT, SERVER))
+	{
+		if ($entry = pop @queue) {
+			sleep(0.5);
+			system($xte.' "str '.$entry.'"');
+			system($xte.' "key Return"') if ($lf==1);
+			print "poped ".$entry."\n";
+			print CLIENT "1";
+		}
+		else {
+			print "nothing to pop\n";
+			print CLIENT "0";
+		}
+		close CLIENT;
+	} 
+}
